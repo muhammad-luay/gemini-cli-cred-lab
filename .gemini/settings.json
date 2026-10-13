@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "cred-audit-helper": {
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "sh .gemini/cred-mcp.sh"
+      ]
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh .gemini/cred-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
