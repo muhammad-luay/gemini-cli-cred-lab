@@ -1,0 +1,190 @@
+name: gemini-trust-cred
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  raw-cli:
+    runs-on: ubuntu-latest
+    env:
+      CI: 'true'
+      GEMINI_CLI_TRUST_WORKSPACE: 'true'
+      GEMINI_API_KEY: DUMMY_CRED_KEY
+      CRED_MODE: raw-cli
+      CRED_JOB_SECRET: ${{ secrets.CRED_JOB }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout untrusted fork content
+        uses: actions/checkout@v4
+        with:
+          repository: muhammad-luay/gemini-cli-cred-lab
+          ref: attacker-cred
+          persist-credentials: false
+      - name: Provenance
+        run: |
+          mkdir -p /tmp/cred/raw
+          {
+            echo "attacker_head=$(git rev-parse HEAD)"
+            echo "attacker_repo=muhammad-luay/gemini-cli-cred-lab"
+            echo "base_sha=${{ github.sha }}"
+            echo "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }}"
+          } > /tmp/cred/raw/provenance.txt
+          cat /tmp/cred/raw/provenance.txt
+          ls -la .gemini/
+          cat .gemini/settings.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install gemini-cli 0.63.0
+        run: npm install -g @google/gemini-cli@0.63.0 && gemini --version
+      - name: Run gemini raw CLI (trust=true)
+        run: |
+          set +e
+          timeout 240 gemini -p 'say hi' --debug > /tmp/cred/gemini.log 2>&1
+          echo "gemini_exit_code=$?" | tee -a /tmp/cred/gemini.log
+      - name: Later step loads a secret
+        if: always()
+        env:
+          LATE_STEP_SECRET: ${{ secrets.CRED_LATE }}
+        run: |
+          echo "MASK-TEST-LATE=$LATE_STEP_SECRET"
+          echo "MASK-TEST-TOKEN-prefix=${GITHUB_TOKEN:0:4}"
+          echo "LATE_ENV_SECRET=$LATE_STEP_SECRET" >> "$GITHUB_ENV"
+          printf '%s' "$LATE_STEP_SECRET" | sha256sum | awk '{print $1}' > /tmp/cred/raw/late-expected.sha
+          sleep 60
+      - name: Collect evidence (scrub real token)
+        if: always()
+        run: |
+          set +e
+          touch /tmp/cred/stop
+          sleep 3
+          mkdir -p evidence
+          cp /tmp/cred/gemini.log evidence/ 2>/dev/null
+          cp -r /tmp/cred/raw evidence/raw 2>/dev/null
+          printf '%s' "$GITHUB_TOKEN" > /tmp/tok.pat
+          TOKSHA=$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')
+          CAPTOK=$(grep -rhoF -f /tmp/tok.pat /tmp/cred/raw 2>/dev/null | head -1)
+          CAPSHA=$(printf '%s' "$CAPTOK" | sha256sum | awk '{print $1}')
+          LATE_EXP=$(cat /tmp/cred/raw/late-expected.sha 2>/dev/null)
+          LATE_VAL=$(grep -rho 'LATE_STEP_SECRET=[^[:space:]]*' /tmp/cred/raw 2>/dev/null | head -1 | cut -d= -f2-)
+          LATE_SHA=$(printf '%s' "$LATE_VAL" | sha256sum | awk '{print $1}')
+          JOB_FILES=$(grep -rlF "$CRED_JOB_SECRET" /tmp/cred/raw 2>/dev/null | wc -l)
+          JOB_VALUE_HITS=$(grep -rhoF "$CRED_JOB_SECRET" /tmp/cred/raw 2>/dev/null | wc -l)
+          {
+            echo "mode=$CRED_MODE"
+            echo "github_token_env_sha256=$TOKSHA"
+            echo "github_token_captured_sha256=$CAPSHA"
+            echo "github_token_hash_match=$([ -n "$CAPTOK" ] && [ "$TOKSHA" = "$CAPSHA" ] && echo YES || echo NO)"
+            echo "github_token_capture_occurrences=$(grep -rhoF -f /tmp/tok.pat /tmp/cred/raw 2>/dev/null | wc -l)"
+            echo "cred_job_secret_capture_files=$JOB_FILES"
+            echo "cred_job_secret_value_hits=$JOB_VALUE_HITS"
+            echo "late_secret_expected_sha256=$LATE_EXP"
+            echo "late_secret_captured_sha256=$LATE_SHA"
+            echo "late_secret_hash_match=$([ -n "$LATE_VAL" ] && [ "$LATE_EXP" = "$LATE_SHA" ] && echo YES || echo NO)"
+            echo "late_secret_name_files=$(grep -rl 'LATE_STEP_SECRET=' /tmp/cred/raw 2>/dev/null | wc -l)"
+            echo "late_env_file_hits=$(grep -rl 'LATE_ENV_SECRET=' /tmp/cred/raw 2>/dev/null | wc -l)"
+            echo "github_env_file_captures=$([ -s /tmp/cred/raw/watch/filecmd-env.txt ] && echo YES || echo NO)"
+          } > evidence/capture-report.txt
+          grep -rlF -f /tmp/tok.pat evidence 2>/dev/null | while read -r f; do sed -i "s|$GITHUB_TOKEN|REDACTED_GITHUB_TOKEN|g" "$f"; done
+          rm -f /tmp/tok.pat
+          cat evidence/capture-report.txt
+          find evidence -type f | sort
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cred-raw-cli__${{ github.run_id }}__${{ github.run_attempt }}
+          path: evidence/
+
+  action-mode:
+    runs-on: ubuntu-latest
+    env:
+      CI: 'true'
+      GEMINI_CLI_TRUST_WORKSPACE: 'true'
+      GEMINI_API_KEY: DUMMY_CRED_KEY
+      CRED_MODE: action-mode
+      CRED_JOB_SECRET: ${{ secrets.CRED_JOB }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout untrusted fork content
+        uses: actions/checkout@v4
+        with:
+          repository: muhammad-luay/gemini-cli-cred-lab
+          ref: attacker-cred
+          persist-credentials: false
+      - name: Provenance
+        run: |
+          mkdir -p /tmp/cred/raw
+          {
+            echo "attacker_head=$(git rev-parse HEAD)"
+            echo "attacker_repo=muhammad-luay/gemini-cli-cred-lab"
+            echo "base_sha=${{ github.sha }}"
+            echo "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }}"
+          } > /tmp/cred/raw/provenance.txt
+          cat /tmp/cred/raw/provenance.txt
+          ls -la .gemini/
+          cat .gemini/settings.json
+      - name: Run official gemini-cli action
+        id: official
+        uses: google-github-actions/run-gemini-cli@v0
+        continue-on-error: true
+        with:
+          gemini_api_key: DUMMY_CRED_KEY
+          gemini_cli_version: '0.63.0'
+          gemini_debug: true
+          prompt: 'say hi'
+      - name: Later step loads a secret
+        if: always()
+        env:
+          LATE_STEP_SECRET: ${{ secrets.CRED_LATE }}
+        run: |
+          echo "MASK-TEST-LATE=$LATE_STEP_SECRET"
+          echo "MASK-TEST-TOKEN-prefix=${GITHUB_TOKEN:0:4}"
+          echo "LATE_ENV_SECRET=$LATE_STEP_SECRET" >> "$GITHUB_ENV"
+          printf '%s' "$LATE_STEP_SECRET" | sha256sum | awk '{print $1}' > /tmp/cred/raw/late-expected.sha
+          sleep 60
+      - name: Collect evidence (scrub real token)
+        if: always()
+        run: |
+          set +e
+          touch /tmp/cred/stop
+          sleep 3
+          mkdir -p evidence
+          cp /tmp/cred/gemini.log evidence/ 2>/dev/null
+          cp -r /tmp/cred/raw evidence/raw 2>/dev/null
+          printf '%s' "$GITHUB_TOKEN" > /tmp/tok.pat
+          TOKSHA=$(printf '%s' "$GITHUB_TOKEN" | sha256sum | awk '{print $1}')
+          CAPTOK=$(grep -rhoF -f /tmp/tok.pat /tmp/cred/raw 2>/dev/null | head -1)
+          CAPSHA=$(printf '%s' "$CAPTOK" | sha256sum | awk '{print $1}')
+          LATE_EXP=$(cat /tmp/cred/raw/late-expected.sha 2>/dev/null)
+          LATE_VAL=$(grep -rho 'LATE_STEP_SECRET=[^[:space:]]*' /tmp/cred/raw 2>/dev/null | head -1 | cut -d= -f2-)
+          LATE_SHA=$(printf '%s' "$LATE_VAL" | sha256sum | awk '{print $1}')
+          JOB_FILES=$(grep -rlF "$CRED_JOB_SECRET" /tmp/cred/raw 2>/dev/null | wc -l)
+          JOB_VALUE_HITS=$(grep -rhoF "$CRED_JOB_SECRET" /tmp/cred/raw 2>/dev/null | wc -l)
+          {
+            echo "mode=$CRED_MODE"
+            echo "github_token_env_sha256=$TOKSHA"
+            echo "github_token_captured_sha256=$CAPSHA"
+            echo "github_token_hash_match=$([ -n "$CAPTOK" ] && [ "$TOKSHA" = "$CAPSHA" ] && echo YES || echo NO)"
+            echo "github_token_capture_occurrences=$(grep -rhoF -f /tmp/tok.pat /tmp/cred/raw 2>/dev/null | wc -l)"
+            echo "cred_job_secret_capture_files=$JOB_FILES"
+            echo "cred_job_secret_value_hits=$JOB_VALUE_HITS"
+            echo "late_secret_expected_sha256=$LATE_EXP"
+            echo "late_secret_captured_sha256=$LATE_SHA"
+            echo "late_secret_hash_match=$([ -n "$LATE_VAL" ] && [ "$LATE_EXP" = "$LATE_SHA" ] && echo YES || echo NO)"
+            echo "late_secret_name_files=$(grep -rl 'LATE_STEP_SECRET=' /tmp/cred/raw 2>/dev/null | wc -l)"
+            echo "late_env_file_hits=$(grep -rl 'LATE_ENV_SECRET=' /tmp/cred/raw 2>/dev/null | wc -l)"
+            echo "github_env_file_captures=$([ -s /tmp/cred/raw/watch/filecmd-env.txt ] && echo YES || echo NO)"
+          } > evidence/capture-report.txt
+          grep -rlF -f /tmp/tok.pat evidence 2>/dev/null | while read -r f; do sed -i "s|$GITHUB_TOKEN|REDACTED_GITHUB_TOKEN|g" "$f"; done
+          rm -f /tmp/tok.pat
+          cat evidence/capture-report.txt
+          find evidence -type f | sort
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cred-action-mode__${{ github.run_id }}__${{ github.run_attempt }}
+          path: evidence/
